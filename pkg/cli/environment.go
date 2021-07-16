@@ -89,6 +89,9 @@ type EnvSettings struct {
 	BurstLimit int
 	// QPS is queries per second which may be used to avoid throttling.
 	QPS float32
+	// UseThreeWayMergePatchForUnstructured controls whether to use three way merge patch
+	// for unstructured (CR, CRD etc.) objects.
+	UseThreeWayMergePatchForUnstructured bool
 }
 
 func New() *EnvSettings {
@@ -111,6 +114,7 @@ func New() *EnvSettings {
 		QPS:                       envFloat32Or("HELM_QPS", defaultQPS),
 	}
 	env.Debug, _ = strconv.ParseBool(os.Getenv("HELM_DEBUG"))
+	env.UseThreeWayMergePatchForUnstructured, _ = strconv.ParseBool(os.Getenv("HELM_USE_THREE_WAY_MERGE_PATCH_FOR_UNSTRUCTURED"))
 
 	// bind to kubernetes config flags
 	config := &genericclioptions.ConfigFlags{
@@ -160,6 +164,7 @@ func (s *EnvSettings) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&s.RepositoryCache, "repository-cache", s.RepositoryCache, "path to the directory containing cached repository indexes")
 	fs.IntVar(&s.BurstLimit, "burst-limit", s.BurstLimit, "client-side default throttling limit")
 	fs.Float32Var(&s.QPS, "qps", s.QPS, "queries per second used when communicating with the Kubernetes API, not including bursting")
+	fs.BoolVar(&s.UseThreeWayMergePatchForUnstructured, "use-three-way-merge-patch-for-unstructured", s.UseThreeWayMergePatchForUnstructured, "use three way merge patch for unstructured (CR, CRD etc.) objects")
 }
 
 func envOr(name, def string) string {
