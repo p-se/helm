@@ -20,12 +20,12 @@ import (
 	"fmt"
 
 	"github.com/pkg/errors"
+	"helm.sh/helm/v3/pkg/kube"
+
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/cli-runtime/pkg/resource"
-
-	"helm.sh/helm/v3/pkg/kube"
 )
 
 var accessor = meta.NewAccessor()
@@ -38,6 +38,7 @@ const (
 )
 
 // requireAdoption returns the subset of resources that already exist in the cluster.
+// The content object of the returned resources is reset to an empty object.
 func requireAdoption(resources kube.ResourceList) (kube.ResourceList, error) {
 	var requireUpdate kube.ResourceList
 
@@ -46,8 +47,8 @@ func requireAdoption(resources kube.ResourceList) (kube.ResourceList, error) {
 			return err
 		}
 
-		helper := resource.NewHelper(info.Client, info.Mapping)
-		_, err = helper.Get(info.Namespace, info.Name)
+		copyInfo := *info
+		err = copyInfo.Get()
 		if err != nil {
 			if apierrors.IsNotFound(err) {
 				return nil
@@ -55,7 +56,15 @@ func requireAdoption(resources kube.ResourceList) (kube.ResourceList, error) {
 			return errors.Wrapf(err, "could not get information about the resource %s", resourceString(info))
 		}
 
-		requireUpdate.Append(info)
+		// If the object is unstructured, reset the content of the object, so
+		// that the two-way patch created from this content merely adds content
+		// but does not remove any content.
+		obj, isUnstructured := copyInfo.Object.(runtime.Unstructured)
+		if isUnstructured {
+			obj.SetUnstructuredContent(map[string]interface{}{})
+		}
+
+		requireUpdate.Append(&copyInfo)
 		return nil
 	})
 
