@@ -650,17 +650,17 @@ func createPatch(target *resource.Info, current runtime.Object, useThreeWayMerge
 	_, isCRD := versionedObject.(*apiextv1beta1.CustomResourceDefinition)
 
 	if isUnstructured || isCRD {
-		// fall back to generic JSON merge patch
 		if useThreeWayMergePatchForUnstructured {
 			// from https://github.com/kubernetes/kubectl/blob/b83b2ec7d15f286720bccf7872b5c72372cb8e80/pkg/cmd/apply/patcher.go#L129
 			preconditions := []mergepatch.PreconditionFunc{mergepatch.RequireKeyUnchanged("apiVersion"),
 				mergepatch.RequireKeyUnchanged("kind"), mergepatch.RequireMetadataKeyUnchanged("name")}
 			patch, err := jsonmergepatch.CreateThreeWayJSONMergePatch(oldData, newData, currentData, preconditions...)
 			if err != nil && mergepatch.IsPreconditionFailed(err) {
-				err = fmt.Errorf("%s", "At least one of apiVersion, kind and name was changed")
+				err = fmt.Errorf("%w: at least one field was changed: apiVersion, kind or name", err)
 			}
 			return patch, types.MergePatchType, err
 		}
+		// fall back to generic JSON merge patch
 		patch, err := jsonpatch.CreateMergePatch(oldData, newData)
 		return patch, types.MergePatchType, err
 	}
