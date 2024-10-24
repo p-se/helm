@@ -23,9 +23,15 @@ import (
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	jsonserializer "k8s.io/apimachinery/pkg/runtime/serializer/json"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/cli-runtime/pkg/resource"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest/fake"
@@ -378,6 +384,146 @@ func TestReal(t *testing.T) {
 	// ensures that delete does not fail if a resource is not found
 	if _, errs := c.Delete(resources); errs != nil {
 		t.Fatal(errs)
+	}
+}
+
+type createPatchTestCase struct {
+	name string
+
+	// The target state.
+	target *unstructured.Unstructured
+	// The current state as it exists in the release.
+	current *unstructured.Unstructured
+	// The actual state as it exists in the cluster.
+	actual *unstructured.Unstructured
+
+	UseThreeWayMergePatchForUnstructured bool
+	// The patch is supposed to transfer the current state to the target state,
+	// thereby preserving the actual state, wherever possible.
+	expectedPatch     string
+	expectedPatchType types.PatchType
+}
+
+func (c createPatchTestCase) run(t *testing.T) {
+	scheme := runtime.NewScheme()
+	corev1.AddToScheme(scheme)
+	encoder := jsonserializer.NewSerializerWithOptions(
+		jsonserializer.DefaultMetaFactory, scheme, scheme, jsonserializer.SerializerOptions{
+			Yaml: false, Pretty: false, Strict: true,
+		},
+	)
+	objBody := func(obj runtime.Object) io.ReadCloser {
+		return io.NopCloser(bytes.NewReader([]byte(runtime.EncodeOrDie(encoder, obj))))
+	}
+	header := make(http.Header)
+	header.Set("Content-Type", runtime.ContentTypeJSON)
+	restClient := &fake.RESTClient{
+		NegotiatedSerializer: unstructuredSerializer,
+		Resp: &http.Response{
+			StatusCode: 200,
+			Body:       objBody(c.actual),
+			Header:     header,
+		},
+	}
+
+	targetInfo := &resource.Info{
+		Client:    restClient,
+		Namespace: "default",
+		Name:      "test-obj",
+		Object:    c.target,
+		Mapping: &meta.RESTMapping{
+			Resource: schema.GroupVersionResource{
+				Group:    "crd.com",
+				Version:  "v1",
+				Resource: "datas",
+			},
+			Scope: meta.RESTScopeNamespace,
+		},
+	}
+
+	patch, patchType, err := createPatch(targetInfo, c.current, c.UseThreeWayMergePatchForUnstructured)
+	if err != nil {
+		t.Fatalf("Failed to create patch: %v", err)
+	}
+
+	if c.expectedPatch != string(patch) {
+		t.Errorf("Unexpected patch.\nTarget:\n%s\nCurrent:\n%s\nActual:\n%s\n\nExpected:\n%s\nGot:\n%s",
+			c.target,
+			c.current,
+			c.actual,
+			c.expectedPatch,
+			string(patch),
+		)
+	}
+
+	if patchType != types.MergePatchType {
+		t.Errorf("Expected patch type %s, got %s", types.MergePatchType, patchType)
+	}
+}
+
+func createUnstructured(spec map[string]interface{}) *unstructured.Unstructured {
+	return &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "crd.com/v1",
+			"kind":       "Data",
+			"metadata": map[string]interface{}{
+				"name":      "test-obj",
+				"namespace": "default",
+			},
+			"spec": spec,
+		},
+	}
+}
+
+// TestCreatePatchAdoptCustomResource tests the createPatch function the way it
+// would be used when takeOwnership is used to adopt a custom resource.
+//
+// Taking ownership of resources does an update instead of an install. In this
+// update operation, target and current are set to the same object, namely the
+// target object. For custom resources, this results in an empty patch, since
+// the actual state of the object in the cluster is not considered as it is for
+// native resources. Setting threeWayMergePatch for unstructured objects to true
+// will result in a three-way merge patch being generated.
+func TestCreatePatchAdoptCustomResource(t *testing.T) {
+	for _, c := range []createPatchTestCase{
+		{
+			name: "merge with existing custom resource",
+			target: createUnstructured(map[string]interface{}{
+				"color": "red",
+				"size":  "large",
+			}),
+			current: createUnstructured(map[string]interface{}{
+				"color": "red",
+				"size":  "large",
+			}),
+			actual: createUnstructured(map[string]interface{}{
+				"color":  "red",
+				"weight": "heavy",
+			}),
+			UseThreeWayMergePatchForUnstructured: true,
+			expectedPatch:                        `{"spec":{"size":"large"}}`,
+			expectedPatchType:                    types.MergePatchType,
+		},
+		{
+			name: "two way merge resulting in empty patch",
+			target: createUnstructured(map[string]interface{}{
+				"color": "red",
+				"size":  "large",
+			}),
+			current: createUnstructured(map[string]interface{}{
+				"color": "red",
+				"size":  "large",
+			}),
+			actual: createUnstructured(map[string]interface{}{
+				"color":  "red",
+				"weight": "heavy",
+			}),
+			UseThreeWayMergePatchForUnstructured: false, // Previous behavior.
+			expectedPatch:                        `{}`,
+			expectedPatchType:                    types.MergePatchType,
+		},
+	} {
+		t.Run(c.name, c.run)
 	}
 }
 
