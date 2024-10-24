@@ -397,7 +397,7 @@ type createPatchTestCase struct {
 	// The actual state as it exists in the cluster.
 	actual *unstructured.Unstructured
 
-	UseThreeWayMergePatchForUnstructured bool
+	threeWayMergeForUnstructured bool
 	// The patch is supposed to transfer the current state to the target state,
 	// thereby preserving the actual state, wherever possible.
 	expectedPatch     string
@@ -441,7 +441,7 @@ func (c createPatchTestCase) run(t *testing.T) {
 		},
 	}
 
-	patch, patchType, err := createPatch(targetInfo, c.current, c.UseThreeWayMergePatchForUnstructured)
+	patch, patchType, err := createPatch(targetInfo, c.current, c.threeWayMergeForUnstructured)
 	if err != nil {
 		t.Fatalf("Failed to create patch: %v", err)
 	}
@@ -461,18 +461,51 @@ func (c createPatchTestCase) run(t *testing.T) {
 	}
 }
 
-func createUnstructured(spec map[string]interface{}) *unstructured.Unstructured {
-	return &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "crd.com/v1",
-			"kind":       "Data",
-			"metadata": map[string]interface{}{
-				"name":      "test-obj",
-				"namespace": "default",
-			},
-			"spec": spec,
-		},
+func newTestUnstructured(metadata map[string]string, spec map[string]interface{}) *unstructured.Unstructured {
+	if metadata == nil {
+		metadata = make(map[string]string)
 	}
+	if _, ok := metadata["name"]; !ok {
+		metadata["name"] = "test-obj"
+	}
+	if _, ok := metadata["namespace"]; !ok {
+		metadata["namespace"] = "default"
+	}
+	o := map[string]interface{}{
+		"apiVersion": "crd.com/v1",
+		"kind":       "Data",
+		"metadata":   metadata,
+	}
+	if len(spec) > 0 {
+		o["spec"] = spec
+	}
+	return &unstructured.Unstructured{
+		Object: o,
+	}
+}
+
+func TestCreatePatchCustomResourceMetadata(t *testing.T) {
+	target := newTestUnstructured(map[string]string{
+		"meta.helm.sh/release-name":      "foo-simple",
+		"meta.helm.sh/release-namespace": "default",
+		"objectset.rio.cattle.io/id":     "default-foo-simple",
+	}, nil)
+	testCase := createPatchTestCase{
+		name:    "take ownership of resource",
+		target:  target,
+		current: target,
+		actual: newTestUnstructured(nil, map[string]interface{}{
+			"color": "red",
+		}),
+		threeWayMergeForUnstructured: true,
+		expectedPatch:                `{"metadata":{"meta.helm.sh/release-name":"foo-simple","meta.helm.sh/release-namespace":"default","objectset.rio.cattle.io/id":"default-foo-simple"}}`,
+		expectedPatchType:            types.MergePatchType,
+	}
+	t.Run(testCase.name, testCase.run)
+
+	testCase.threeWayMergeForUnstructured = false
+	testCase.expectedPatch = `{}`
+	t.Run(testCase.name, testCase.run)
 }
 
 // TestCreatePatchAdoptCustomResource tests the createPatch function the way it
@@ -484,47 +517,29 @@ func createUnstructured(spec map[string]interface{}) *unstructured.Unstructured 
 // the actual state of the object in the cluster is not considered as it is for
 // native resources. Setting threeWayMergePatch for unstructured objects to true
 // will result in a three-way merge patch being generated.
-func TestCreatePatchAdoptCustomResource(t *testing.T) {
-	for _, c := range []createPatchTestCase{
-		{
-			name: "merge with existing custom resource",
-			target: createUnstructured(map[string]interface{}{
-				"color": "red",
-				"size":  "large",
-			}),
-			current: createUnstructured(map[string]interface{}{
-				"color": "red",
-				"size":  "large",
-			}),
-			actual: createUnstructured(map[string]interface{}{
-				"color":  "red",
-				"weight": "heavy",
-			}),
-			UseThreeWayMergePatchForUnstructured: true,
-			expectedPatch:                        `{"spec":{"size":"large"}}`,
-			expectedPatchType:                    types.MergePatchType,
-		},
-		{
-			name: "two way merge resulting in empty patch",
-			target: createUnstructured(map[string]interface{}{
-				"color": "red",
-				"size":  "large",
-			}),
-			current: createUnstructured(map[string]interface{}{
-				"color": "red",
-				"size":  "large",
-			}),
-			actual: createUnstructured(map[string]interface{}{
-				"color":  "red",
-				"weight": "heavy",
-			}),
-			UseThreeWayMergePatchForUnstructured: false, // Previous behavior.
-			expectedPatch:                        `{}`,
-			expectedPatchType:                    types.MergePatchType,
-		},
-	} {
-		t.Run(c.name, c.run)
+func TestCreatePatchCustomResourceSpec(t *testing.T) {
+	target := newTestUnstructured(nil, map[string]interface{}{
+		"color": "red",
+		"size":  "large",
+	})
+	testCase := createPatchTestCase{
+		name:    "merge with spec of existing custom resource",
+		target:  target,
+		current: target,
+		actual: newTestUnstructured(nil, map[string]interface{}{
+			"color":  "red",
+			"weight": "heavy",
+		}),
+		threeWayMergeForUnstructured: true,
+		expectedPatch:                `{"spec":{"size":"large"}}`,
+		expectedPatchType:            types.MergePatchType,
 	}
+	t.Run(testCase.name, testCase.run)
+
+	// Previous behavior.
+	testCase.threeWayMergeForUnstructured = false
+	testCase.expectedPatch = `{}`
+	t.Run(testCase.name, testCase.run)
 }
 
 const testServiceManifest = `
