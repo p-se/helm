@@ -26,6 +26,7 @@ import (
 	"strings"
 
 	"github.com/pkg/errors"
+
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/discovery"
@@ -93,6 +94,11 @@ type Configuration struct {
 
 	// Capabilities describes the capabilities of the Kubernetes cluster.
 	Capabilities *chartutil.Capabilities
+
+	// ThreeWayMergeForUnstructured controls whether to use three way merge
+	// patch for unstructured objects (custom resource, custom definitions,
+	// etc).
+	ThreeWayMergeForUnstructured bool
 
 	Log func(string, ...interface{})
 }
@@ -373,6 +379,7 @@ func (cfg *Configuration) recordRelease(r *release.Release) {
 func (cfg *Configuration) Init(getter genericclioptions.RESTClientGetter, namespace, helmDriver string, log DebugLog) error {
 	kc := kube.New(getter)
 	kc.Log = log
+	kc.ThreeWayMergeForUnstructured = cfg.ThreeWayMergeForUnstructured
 
 	lazyClient := &lazyClient{
 		namespace: namespace,
